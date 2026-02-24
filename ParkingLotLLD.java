@@ -397,7 +397,7 @@ class ExitGate {
 // 8. MAIN EXECUTION (Simulation)
 // ==========================================
 
-public class Main {
+public class ParkingLotLLD {
     public static void main(String[] args) {
         System.out.println("=== STARTING PARKING LOT SIMULATION ===");
 
