@@ -292,3 +292,39 @@ If you finish early, the interviewer will likely ask you how to scale this furth
 * **Order Splitting:** If a user wants 5 items, and WH-A has 3, and WH-B has 2, our current `NearestWarehouseStrategy` fails. You'd explain that you would update the Strategy to return a `Map<Warehouse, Integer>` outlining the split shipment.
 * **Cart TTL (Time-To-Live):** Explain that `ItemState.RESERVED` implies the item is in a cart. You would introduce a background cron job (or use a Redis TTL in a real distributed system) that sweeps the database every minute, finding items stuck in `RESERVED` for $> 10$ minutes, and resetting them to `AVAILABLE`.
 * **FEFO (First-Expiring, First-Out):** If the prompt changes to a grocery store, you would swap the `ConcurrentLinkedQueue` for a `PriorityQueue`, sorting items by their expiration date.
+
+
+## 7. Advanced Architectural Enhancements (SDE-3 Talking Points)
+
+While our core engine safely handles high-concurrency flash sales via fine-grained locking, a production-level interview might ask how we handle complex object creation or distributed server environments. Here are the precise enhancements to discuss:
+
+### 7.1. Creational Design Patterns (Handling Complex Products)
+
+Currently, our `Product` class is relatively simple. If we were to expand this system to handle highly complex items (like Electronics with optional warranties, varying power consumption, or specific wireless connectivities), we should integrate the following patterns:
+
+* **The Builder Pattern:** Instead of having constructors with 10+ parameters or relying on heavy setter methods, we would use the Builder Pattern. It is perfect for creating complex product objects with many optional parameters. It guarantees that once the `Product` is built, it is immutable and thread-safe.
+
+* **The Factory Pattern:** To keep the `InventoryManager` clean, we would encapsulate the logic of object instantiation. A `ProductFactory` class would be responsible for returning the correct `Product` instance based on a provided `ProductCategory` enum.
+
+
+
+**🎤 Interview Script for Creational Patterns:**
+
+> *"To keep our core engine focused on thread-safe transactions, I would extract the object creation logic out to a `ProductFactory`. Furthermore, since products like Electronics have many optional attributes, I would implement the Builder Pattern. This ensures clean, step-by-step construction of the `Product` objects without polluting the codebase with massive constructors."*
+
+### 7.2. Avoiding Inheritance Anti-Patterns (Composition over Inheritance)
+
+Many standard tutorials implement a deep inheritance tree where `ElectronicsProduct`, `ClothingProduct`, and `GroceryProduct` all heavily extend an abstract `Product` base class.
+
+* **The Trade-off:** Deep inheritance trees make the domain brittle. If a product belongs to two categories (e.g., an electronic wearable shirt), strict inheritance breaks down.
+* **The Solution:** We favor **Composition and Tagging**. Instead of extending classes, we give a base `Product` class a list of `Category` tags or an `Attributes` map. This is much more flexible for a real-world e-commerce catalog.
+
+### 7.3. Production-Ready Distributed System Upgrades
+
+To deploy our `Warehouse` logic across thousands of servers, we would abstract our in-memory data structures:
+
+1. **Repository Layer (Database Abstraction):** We would abstract the `ConcurrentHashMap` behind an `InventoryRepository` interface. This allows us to easily swap our in-memory map for a persistent SQL database or a Redis cache without altering the core routing logic.
+2. **Distributed Locking:** Our `ReentrantLock` guarantees safety for threads running on a *single* server. In a distributed environment, we would replace this with a distributed locking mechanism like **Redis Redlock** or **Apache Zookeeper** to synchronize locks across multiple JVMs.
+3. **Idempotency Keys:** If a user's network drops during checkout and their app automatically retries the request, we risk reserving a *second* item. We would require an `idempotencyKey` (e.g., a checkout session UUID) in the `fulfillOrder` parameters to ensure the operation is strictly processed only once.
+4. **The Saga Pattern & Cart TTL:** If we successfully reserve items (transitioning them to `RESERVED`), but the external Payment Service fails a few seconds later, we need a rollback strategy. A background cron job (or Redis TTL) would sweep the database every minute, identify items stuck in `RESERVED` for more than 10 minutes, and revert them to `AVAILABLE` to prevent inventory leakage.
+
