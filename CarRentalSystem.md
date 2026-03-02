@@ -60,23 +60,48 @@ import java.util.concurrent.locks.*;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 
+/**
+ * ============================================================================
+ * ULTIMATE CAR RENTAL SYSTEM LOW-LEVEL DESIGN (PRODUCTION READY)
+ * ============================================================================
+ * INTERVIEW SCRIPT / INTRODUCTION:
+ * "To design a highly scalable and thread-safe Car Rental System, I am focusing 
+ * on concurrency and the Open/Closed Principle. I will use 4 main patterns:
+ * 1. STATE PATTERN: To handle the strict lifecycle of a reservation (Pending -> Confirmed).
+ * 2. STRATEGY PATTERN: To decouple pricing and payments so business rules can change easily.
+ * 3. DECORATOR PATTERN: To handle add-ons (like GPS or Insurance) without Class Explosion.
+ * 4. FINE-GRAINED LOCKING: Using ReentrantLocks per vehicle to prevent double-booking 
+ * without freezing the entire branch database."
+ * ============================================================================
+ */
+
 // ==========================================
 // 1. STATE MANAGEMENT & ENTITIES
 // ==========================================
 
+/*
+ * INTERVIEW EXPLANATION:
+ * "I use Enums here for Vehicle Type and Status. If we used standard Strings, a typo 
+ * like 'available' vs 'AVAILABLE' could break our search algorithms. Enums guarantee 
+ * strict type safety at compile time."
+ */
 enum VehicleType { ECONOMY, SUV, LUXURY }
 enum VehicleStatus { AVAILABLE, MAINTENANCE }
 
-/* INTERVIEW EXPLANATION: "I am using a State Machine for the Reservation. 
-A booking starts as PENDING. We hold the lock on the vehicle, attempt to charge the 
-user's credit card, and ONLY if that succeeds do we transition to CONFIRMED. 
-If payment fails, it transitions to CANCELED and the vehicle is instantly freed." */
+/* * INTERVIEW EXPLANATION: 
+ * "This represents a strict State Machine for the Reservation. A booking ALWAYS starts 
+ * as PENDING. We hold the lock on the vehicle, attempt to charge the user's credit card, 
+ * and ONLY if the payment gateway returns 'true' do we transition to CONFIRMED. 
+ * If payment fails, it transitions to CANCELED and the vehicle is instantly freed." 
+ */
 enum ReservationStatus { PENDING, CONFIRMED, CANCELED }
 
 class User {
     private String userId;
     private String fullName;
-    private String drivingLicense; // Crucial for domain validation
+    
+    // "Capturing driving license is a strict domain requirement for a car rental."
+    private String drivingLicense; 
     
     public User(String userId, String fullName, String drivingLicense) {
         this.userId = userId;
@@ -118,7 +143,8 @@ class Reservation {
         this.licensePlate = licensePlate;
         this.startDate = startDate;
         this.endDate = endDate;
-        this.status = ReservationStatus.PENDING; // Always starts pending
+        // "Every reservation must start as PENDING until money physically changes hands."
+        this.status = ReservationStatus.PENDING; 
     }
 
     public LocalDate getStartDate() { return startDate; }
@@ -131,9 +157,12 @@ class Reservation {
 // 2. STRATEGY PATTERNS (Pricing & Payment)
 // ==========================================
 
-/* INTERVIEW EXPLANATION: "To adhere to the Open/Closed Principle, I decoupled pricing and payments 
-using the Strategy Pattern. If the business introduces a 'Holiday Surge' price or 'Apple Pay', 
-we just inject a new Strategy class without altering the core checkout logic." */
+/* * INTERVIEW EXPLANATION: 
+ * "To adhere to the Open/Closed Principle, I decoupled pricing and payments 
+ * using the Strategy Pattern. If the business introduces a 'Holiday Surge' price 
+ * or integrates 'Apple Pay' tomorrow, we do not need to touch the core checkout logic. 
+ * We just inject a new Strategy class." 
+ */
 
 interface PricingStrategy {
     double calculateBasePrice(Vehicle vehicle, long days);
@@ -143,7 +172,8 @@ class WeeklyDiscountPricingStrategy implements PricingStrategy {
     @Override
     public double calculateBasePrice(Vehicle vehicle, long days) {
         double total = vehicle.getBaseDailyRate() * days;
-        return days >= 7 ? total * 0.8 : total; // 20% off for 7+ days
+        // "A simple business rule: 20% discount if you book for a week or more."
+        return days >= 7 ? total * 0.8 : total; 
     }
 }
 
@@ -155,7 +185,7 @@ class CreditCardPayment implements PaymentStrategy {
     @Override
     public boolean processPayment(double amount) {
         System.out.println("Charging $" + amount + " to Credit Card...");
-        return true; // Mocking a successful bank charge
+        return true; // "Mocking a successful bank charge for the simulation."
     }
 }
 
@@ -163,9 +193,12 @@ class CreditCardPayment implements PaymentStrategy {
 // 3. DECORATOR PATTERN (Add-ons)
 // ==========================================
 
-/* INTERVIEW BONUS POINT: "I use the Decorator pattern for Add-ons like GPS. 
-It acts like a wrapper around the base invoice. This prevents 'class explosion' where we would 
-otherwise need to create classes for every possible combination of add-ons." */
+/* * INTERVIEW BONUS POINT (AVOIDING CLASS EXPLOSION): 
+ * "I use the Decorator pattern for Add-ons like GPS or Insurance. If I used inheritance, 
+ * I would have to create `CarWithGPS`, `CarWithInsurance`, and `CarWithGPSAndInsurance` classes. 
+ * That is called Class Explosion. The Decorator acts like a wrapper around the base invoice, 
+ * allowing us to stack as many add-ons as we want dynamically at runtime." 
+ */
 
 interface Invoice { double getTotal(); }
 
@@ -182,56 +215,93 @@ abstract class InvoiceDecorator implements Invoice {
 
 class GPSDecorator extends InvoiceDecorator {
     private long days;
-    public GPSDecorator(Invoice invoice, long days) { super(invoice); this.days = days; }
-    @Override public double getTotal() { return wrappedInvoice.getTotal() + (5.0 * days); } // $5/day
+    public GPSDecorator(Invoice invoice, long days) { 
+        super(invoice); 
+        this.days = days; 
+    }
+    
+    @Override 
+    public double getTotal() { 
+        // "It calculates the GPS cost ($5/day) and adds it to whatever invoice is inside it."
+        return wrappedInvoice.getTotal() + (5.0 * days); 
+    } 
 }
 
 // ==========================================
 // 4. CONCURRENT ENGINE (The Double-Booking Fix)
 // ==========================================
 
-/* INTERVIEW EXPLANATION: "This is the core of our thread safety. We use fine-grained ReentrantLocks 
-mapped by License Plate. I explicitly check the dates against the vehicle's schedule 
-INSIDE the lock to guarantee no race conditions occur when two users want the same car." */
+/* * INTERVIEW EXPLANATION: 
+ * "This is the core of our system's thread safety. If two users try to book the exact 
+ * same car for the exact same dates at the exact same millisecond, a standard system 
+ * will double-book it. I am using ConcurrentHashMaps and ReentrantLocks mapped by 
+ * License Plate to guarantee absolute data integrity." 
+ */
 
 class Branch {
+    
+    // "ConcurrentHashMap guarantees O(1) thread-safe lookups across multiple threads."
     private Map<String, Vehicle> fleet = new ConcurrentHashMap<>();
+    
+    /*
+     * INTERVIEW BONUS POINT:
+     * "I am using a CopyOnWriteArrayList for the schedules. In a highly concurrent environment 
+     * where many users are reading the schedule to see if a car is free, but only a few 
+     * are writing to it (booking), this structure prevents ConcurrentModificationExceptions."
+     */
     private Map<String, List<Reservation>> vehicleSchedules = new ConcurrentHashMap<>();
+    
+    // "Stores a unique physical lock for every single car in the fleet."
     private Map<String, ReentrantLock> vehicleLocks = new ConcurrentHashMap<>();
 
     public void addVehicle(Vehicle v) {
         fleet.put(v.getLicensePlate(), v);
         vehicleSchedules.put(v.getLicensePlate(), new CopyOnWriteArrayList<>());
     }
+    
     public Vehicle getVehicle(String licensePlate) { return fleet.get(licensePlate); }
 
+    // "Helper method to verify date overlaps."
     private boolean isVehicleFreeForDates(String licensePlate, LocalDate start, LocalDate end) {
         for (Reservation r : vehicleSchedules.get(licensePlate)) {
-            // Check for date overlaps, ignoring canceled reservations
+            // "We only check against active/pending reservations. Canceled ones are ignored."
             if (r.getStatus() != ReservationStatus.CANCELED && 
                 !start.isAfter(r.getEndDate()) && !end.isBefore(r.getStartDate())) {
-                return false; // Collision found!
+                return false; // Collision found! The car is busy.
             }
         }
         return true;
     }
 
+    /*
+     * INTERVIEW EXPLANATION (FINE-GRAINED LOCKING):
+     * "Instead of locking the entire Branch (which would mean only 1 person in the 
+     * world could book a car at a time), I lock ONLY the specific vehicle being requested. 
+     * This is called fine-grained locking and it allows massive system throughput."
+     */
     public Reservation acquireLockAndReserve(String licensePlate, User user, LocalDate start, LocalDate end) throws Exception {
         Vehicle v = fleet.get(licensePlate);
         if (v == null || v.getStatus() != VehicleStatus.AVAILABLE) throw new Exception("Car is in maintenance.");
 
+        // "Dynamically fetch or create a lock for this specific license plate."
         ReentrantLock lock = vehicleLocks.computeIfAbsent(licensePlate, k -> new ReentrantLock());
         
-        lock.lock(); // Critical Section: Only 1 thread can book this specific car at a time
+        lock.lock(); // CRITICAL SECTION STARTS HERE
         try {
+            // "We MUST check if the car is free INSIDE the lock. If we checked outside, 
+            // another thread could have snuck in and booked it right before we locked."
             if (!isVehicleFreeForDates(licensePlate, start, end)) {
                 throw new Exception("Date collision: Car was just booked for those dates.");
             }
+            
+            // "Create the reservation and add it to the schedule safely."
             Reservation res = new Reservation(user, licensePlate, start, end);
             vehicleSchedules.get(licensePlate).add(res);
-            return res; // Returns securely in PENDING state
+            return res; // Returns securely in the PENDING state
         } finally {
-            lock.unlock(); // Always release the lock!
+            // "Crucial: We MUST unlock inside a 'finally' block. If the code above threw 
+            // an error and we didn't unlock here, this car would be permanently frozen forever!"
+            lock.unlock(); 
         }
     }
 }
@@ -240,6 +310,12 @@ class Branch {
 // 5. GLOBAL ORCHESTRATOR & MAIN
 // ==========================================
 
+/*
+ * INTERVIEW EXPLANATION:
+ * "The CarRentalSystem is a Singleton. It acts as the Facade for our backend. 
+ * The mobile app or website only ever talks to this class. It orchestrates the 
+ * validation, locking, pricing, and payment flow."
+ */
 class CarRentalSystem {
     private static final CarRentalSystem INSTANCE = new CarRentalSystem();
     private CarRentalSystem() {}
@@ -252,28 +328,33 @@ class CarRentalSystem {
             // 1. Domain Validation
             if (user.getDrivingLicense() == null) throw new Exception("Invalid Driving License.");
 
-            // 2. Thread-Safe Booking (Creates PENDING reservation)
+            // 2. Thread-Safe Booking (Creates a PENDING reservation)
             Reservation res = branch.acquireLockAndReserve(licensePlate, user, start, end);
             Vehicle vehicle = branch.getVehicle(licensePlate);
+            
+            // Calculate rental duration
             long days = ChronoUnit.DAYS.between(start, end);
-            if (days == 0) days = 1;
+            if (days == 0) days = 1; // Minimum 1 day charge
 
-            // 3. Strategy Pattern for Base Price
+            // 3. Strategy Pattern: Calculate Base Price
             double baseCost = pricing.calculateBasePrice(vehicle, days);
             Invoice finalInvoice = new BaseInvoice(baseCost);
 
-            // 4. Decorator Pattern for Add-ons
-            if (addGps) finalInvoice = new GPSDecorator(finalInvoice, days);
+            // 4. Decorator Pattern: Wrap the invoice with Add-ons if requested
+            if (addGps) {
+                finalInvoice = new GPSDecorator(finalInvoice, days);
+            }
 
-            // 5. Strategy Pattern for Payment & State Transition
+            // 5. Strategy Pattern: Process Payment
             boolean paymentSuccess = payment.processPayment(finalInvoice.getTotal());
             
+            // 6. State Machine Transition
             if (paymentSuccess) {
                 res.setStatus(ReservationStatus.CONFIRMED);
                 System.out.println("SUCCESS: Booking Confirmed for " + user.getUserId() + "! Total: $" + finalInvoice.getTotal());
             } else {
                 res.setStatus(ReservationStatus.CANCELED);
-                System.out.println("FAIL: Payment declined.");
+                System.out.println("FAIL: Payment declined. Reservation canceled.");
             }
         } catch (Exception e) {
             System.out.println("ERROR for " + user.getUserId() + ": " + e.getMessage());
@@ -283,22 +364,29 @@ class CarRentalSystem {
 
 public class MainSimulation {
     public static void main(String[] args) {
+        System.out.println("=== STARTING CAR RENTAL MULTITHREADED SIMULATION ===\n");
+        
         CarRentalSystem system = CarRentalSystem.getInstance();
         Branch branch = new Branch();
+        
+        // Setup fleet
         branch.addVehicle(new Vehicle("NY-123", VehicleType.SUV, 100.0));
 
+        // Setup users
         User alice = new User("U-01", "Alice", "DL-111");
         User bob = new User("U-02", "Bob", "DL-222");
 
         LocalDate start = LocalDate.of(2026, 8, 1);
         LocalDate end = LocalDate.of(2026, 8, 10); 
 
-        // Alice books successfully
+        // Simulation 1: Alice successfully books the car with GPS
+        System.out.println("--> Alice is attempting to book NY-123...");
         system.checkout(branch, "NY-123", alice, start, end, 
                         new WeeklyDiscountPricingStrategy(), new CreditCardPayment(), true);
 
-        // Bob tries to book the exact same dates immediately after. 
-        // The ReentrantLock ensures this fails safely instead of double-booking!
+        // Simulation 2: Bob tries to book the exact same car for the exact same dates
+        System.out.println("\n--> Bob is attempting to book NY-123 for the same dates...");
+        // The ReentrantLock and date-checking logic ensures this fails safely!
         system.checkout(branch, "NY-123", bob, start, end, 
                         new WeeklyDiscountPricingStrategy(), new CreditCardPayment(), false);
     }
