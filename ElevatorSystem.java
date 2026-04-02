@@ -287,7 +287,7 @@ class ElevatorDispatcher {
 // ==========================================
 // 6. MAIN EXECUTION (The Simulation)
 // ==========================================
-public class Main {
+public class ElevatorSystem {
     public static void main(String[] args) {
         System.out.println("=== STARTING ELEVATOR SYSTEM SIMULATION ===\n");
 
